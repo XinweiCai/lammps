@@ -13,7 +13,7 @@
 
 #include <math.h>
 #include <stdlib.h>
-#include "pair_sph_morris1997_noslip_cylinder.h"
+#include "pair_sph_morris1997_noslip_sphere.h"
 #include "atom.h"
 #include "force.h"
 #include "comm.h"
@@ -29,7 +29,7 @@ using namespace LAMMPS_NS;
 
 /* ---------------------------------------------------------------------- */
 
-PairSPHMorris1997NoslipCylinder::PairSPHMorris1997NoslipCylinder(LAMMPS *lmp) : Pair(lmp)
+PairSPHMorris1997NoslipSphere::PairSPHMorris1997NoslipSphere(LAMMPS *lmp) : Pair(lmp)
 {
   restartinfo = 0;
   first = 1;
@@ -37,7 +37,7 @@ PairSPHMorris1997NoslipCylinder::PairSPHMorris1997NoslipCylinder(LAMMPS *lmp) : 
 
 /* ---------------------------------------------------------------------- */
 
-PairSPHMorris1997NoslipCylinder::~PairSPHMorris1997NoslipCylinder() {
+PairSPHMorris1997NoslipSphere::~PairSPHMorris1997NoslipSphere() {
   if (allocated) {
     memory->destroy(setflag);
     memory->destroy(cutsq);
@@ -47,8 +47,6 @@ PairSPHMorris1997NoslipCylinder::~PairSPHMorris1997NoslipCylinder() {
     memory->destroy(viscosity);
     memory->destroy(rigid_group);
     memory->destroy(rsphere);
-	memory->destroy(xc);
-	memory->destroy(yc);
     memory->destroy(beta);
   }
 }
@@ -56,7 +54,7 @@ PairSPHMorris1997NoslipCylinder::~PairSPHMorris1997NoslipCylinder() {
 /* ---------------------------------------------------------------------- */
 
 inline vector<double, 3> noslip(const vector<double, 3> &xc, const double R, const vector<double, 3> &xb, const vector<double, 3> &xf,
-                                const vector<double, 3> &vb, const vector<double, 3> &vf, const double beta) {
+                                const vector<double, 3> &vc, const vector<double, 3> &omega, const vector<double, 3> &vb, const vector<double, 3> &vf, const double beta) {
   const vector<double, 3> dfc = xf - xc;
   const double fc = norm(dfc);
   const double df = fc - R;
@@ -64,12 +62,15 @@ inline vector<double, 3> noslip(const vector<double, 3> &xc, const double R, con
     return vb;
   const vector<double, 3> dbc = xb - xc;
   const double db = R - dot(dfc, dbc) / fc;
+  const vector<double ,3> xs = xc + dfc / fc * R;
+  const vector<double, 3> vs = vc + cross(omega, xs - xc);
   double scale = db / df;
   if (scale > beta) scale = beta;
-  return - scale * vf;
+  return - scale * (vf - vs) + vs;
 }
 
-void PairSPHMorris1997NoslipCylinder::compute(int eflag, int vflag) {
+
+void PairSPHMorris1997NoslipSphere::compute(int eflag, int vflag) {
   int i, j, ii, jj, inum, jnum, itype, jtype;
   double xtmp, ytmp, ztmp, delx, dely, delz, fpair;
 
@@ -120,26 +121,26 @@ void PairSPHMorris1997NoslipCylinder::compute(int eflag, int vflag) {
 
   // no slip: update center of mass, v, omega
 
-  //std::map<int, vector<double, 3> > xcm;
-  //std::map<int, vector<double, 3> > vcm;
-  //std::map<int, vector<double, 3> > omega;
-  //for (std::map<int, double>::iterator it = masstotal.begin(); it != masstotal.end(); ++it) {
-  //  vector<double, 3> x_one;
-  //  group->xcm(it->first, it->second, x_one.data());
-  //  xcm[it->first] = x_one;
+  std::map<int, vector<double, 3> > xcm;
+  std::map<int, vector<double, 3> > vcm;
+  std::map<int, vector<double, 3> > omega;
+  for (std::map<int, double>::iterator it = masstotal.begin(); it != masstotal.end(); ++it) {
+   vector<double, 3> x_one;
+   group->xcm(it->first, it->second, x_one.data());
+   xcm[it->first] = x_one;
 
-  //  vector<double, 3> v_one;
-  //  group->vcm(it->first, it->second, v_one.data());
-  //  vcm[it->first] = v_one;
+   vector<double, 3> v_one;
+   group->vcm(it->first, it->second, v_one.data());
+   vcm[it->first] = v_one;
 
-  //  double lmom[3];
-  //  group->angmom(it->first, x_one.data(), lmom);
-  //  double inertia[3][3];
-  //  group->inertia(it->first, x_one.data(), inertia);
-  //  vector<double, 3> omega_one;
-  //  group->omega(lmom, inertia, omega_one.data());
-  //  omega[it->first] = omega_one;
-  //}
+   double lmom[3];
+   group->angmom(it->first, x_one.data(), lmom);
+   double inertia[3][3];
+   group->inertia(it->first, x_one.data(), inertia);
+   vector<double, 3> omega_one;
+   group->omega(lmom, inertia, omega_one.data());
+   omega[it->first] = omega_one;
+  }
 
   // loop over neighbors of my atoms
 
@@ -185,9 +186,11 @@ void PairSPHMorris1997NoslipCylinder::compute(int eflag, int vflag) {
         const int groupid = rigid_group[itype][jtype];
         const int groupbit = group->bitmask[groupid];
         if ((mask[i] & groupbit) && !(mask[j] & groupbit))
-			vi = noslip({xc[itype][jtype], yc[itype][jtype], ztmp}, rsphere[itype][jtype], { xtmp, ytmp, ztmp }, { x[j][0], x[j][1], ztmp }, vi, vj, beta[itype][jtype]);
+          vi = noslip(xcm[groupid], rsphere[itype][jtype], {xtmp, ytmp, ztmp}, {x[j][0], x[j][1], x[j][2]},
+                      vcm[groupid], omega[groupid], vi, vj, beta[itype][jtype]);
         else if (!(mask[i] & groupbit) && (mask[j] & groupbit))
-			vj = noslip({xc[itype][jtype], yc[itype][jtype], x[j][2]}, rsphere[itype][jtype], { x[j][0], x[j][1], x[j][2] }, { xtmp, ytmp, x[j][2]}, vj, vi, beta[itype][jtype]);
+          vj = noslip(xcm[groupid], rsphere[itype][jtype], {x[j][0], x[j][1], x[j][2]}, {xtmp, ytmp, ztmp},
+                      vcm[groupid], omega[groupid], vj, vi, beta[itype][jtype]);
         const vector<double, 3> vel = vi - vj;
 
         // kernel
@@ -215,7 +218,7 @@ void PairSPHMorris1997NoslipCylinder::compute(int eflag, int vflag) {
         // dot product of velocity delta and distance vector
         delVdotDelR = delx * velx + dely * vely + delz * velz;
 
-        // Morris Viscosity (Morris, 1996)
+        // Morris Viscosity (Morris, 1997)
 
         fvisc = 2 * viscosity[itype][jtype] / (rho[i] * rho[j]);
 
@@ -260,7 +263,7 @@ void PairSPHMorris1997NoslipCylinder::compute(int eflag, int vflag) {
  allocate all arrays
  ------------------------------------------------------------------------- */
 
-void PairSPHMorris1997NoslipCylinder::allocate() {
+void PairSPHMorris1997NoslipSphere::allocate() {
   allocated = 1;
   int n = atom->ntypes;
 
@@ -276,8 +279,6 @@ void PairSPHMorris1997NoslipCylinder::allocate() {
   memory->create(viscosity, n + 1, n + 1, "pair:viscosity");
   memory->create(rigid_group, n + 1, n + 1, "pair:rigid_group");
   memory->create(rsphere, n + 1, n + 1, "pair:rsphere");
-  memory->create(xc, n + 1, n + 1, "pair:xc");
-  memory->create(yc, n + 1, n + 1, "pair:yc");
   memory->create(beta, n + 1, n + 1, "pair:beta");
 
   kernel.resize(n + 1);
@@ -289,7 +290,7 @@ void PairSPHMorris1997NoslipCylinder::allocate() {
  global settings
  ------------------------------------------------------------------------- */
 
-void PairSPHMorris1997NoslipCylinder::settings(int narg, char **arg) {
+void PairSPHMorris1997NoslipSphere::settings(int narg, char **arg) {
   if (narg != 0)
     error->all(FLERR,
         "Illegal number of setting arguments for pair_style sph/taitwater/morris");
@@ -299,8 +300,8 @@ void PairSPHMorris1997NoslipCylinder::settings(int narg, char **arg) {
  set coeffs for one or more type pairs
  ------------------------------------------------------------------------- */
 
-void PairSPHMorris1997NoslipCylinder::coeff(int narg, char **arg) {
-  if (narg != 11)
+void PairSPHMorris1997NoslipSphere::coeff(int narg, char **arg) {
+  if (narg != 9)
     error->all(FLERR,
         "Incorrect args for pair_style sph/taitwater/morris coefficients");
   if (!allocated)
@@ -315,10 +316,8 @@ void PairSPHMorris1997NoslipCylinder::coeff(int narg, char **arg) {
   double cut_one = force->numeric(FLERR,arg[4]);
   int kernel_one = force->inumeric(FLERR,arg[5]);
   int rigid_group_one = group->find(arg[6]);
-  double xc_one = force->numeric(FLERR, arg[7]);
-  double yc_one = force->numeric(FLERR, arg[8]);
-  double rsphere_one = force->numeric(FLERR,arg[9]);
-  double beta_one = force->numeric(FLERR,arg[10]);
+  double rsphere_one = force->numeric(FLERR,arg[7]);
+  double beta_one = force->numeric(FLERR,arg[8]);
   double B_one = soundspeed_one * soundspeed_one;
 
   int count = 0;
@@ -333,8 +332,6 @@ void PairSPHMorris1997NoslipCylinder::coeff(int narg, char **arg) {
       cut[i][j] = cut_one;
       kernel[i][j].init(domain->dimension, kernel_one, cut_one);
       rigid_group[i][j] = rigid_group_one;
-	  xc[i][j] = xc_one;
-	  yc[i][j] = yc_one;
       rsphere[i][j] = rsphere_one;
       beta[i][j] = beta_one;
 
@@ -345,6 +342,9 @@ void PairSPHMorris1997NoslipCylinder::coeff(int narg, char **arg) {
     }
   }
 
+  if (masstotal.find(rigid_group_one) == masstotal.end())
+    masstotal.insert(std::pair<int, double>(rigid_group_one, group->mass(rigid_group_one)));
+
   if (count == 0)
     error->all(FLERR,"Incorrect args for pair coefficients");
 }
@@ -353,7 +353,7 @@ void PairSPHMorris1997NoslipCylinder::coeff(int narg, char **arg) {
  init for one type pair i,j and corresponding j,i
  ------------------------------------------------------------------------- */
 
-double PairSPHMorris1997NoslipCylinder::init_one(int i, int j) {
+double PairSPHMorris1997NoslipSphere::init_one(int i, int j) {
 
   if (setflag[i][j] == 0) {
     error->all(FLERR,"Not all pair sph/taitwater/morris coeffs are not set");
@@ -364,8 +364,6 @@ double PairSPHMorris1997NoslipCylinder::init_one(int i, int j) {
   kernel[j][i].init(domain->dimension, kernel[i][j].get_kernel_type(), cut[j][i]);
   rigid_group[j][i] = rigid_group[i][j];
   rsphere[j][i] = rsphere[i][j];
-  xc[j][i] = xc[i][j];
-  yc[j][i] = yc[i][j];
   beta[j][i] = beta[i][j];
 
   return cut[i][j];
@@ -373,7 +371,7 @@ double PairSPHMorris1997NoslipCylinder::init_one(int i, int j) {
 
 /* ---------------------------------------------------------------------- */
 
-double PairSPHMorris1997NoslipCylinder::single(int i, int j, int itype, int jtype,
+double PairSPHMorris1997NoslipSphere::single(int i, int j, int itype, int jtype,
     double rsq, double factor_coul, double factor_lj, double &fforce) {
   fforce = 0.0;
 
