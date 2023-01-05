@@ -1,0 +1,105 @@
+#2022-12-09
+# Re =1 
+# 2-d a moving cylinder flow simulation
+
+variable dx equal 0.002
+variable rho equal 1000
+#variable m equal 1000*sqrt(3)*6*${dx}*${dx}/12
+variable m equal ${rho}*${dx}^2
+variable a equal 8e-9		  #体积力（m/s^2）
+variable f equal ${m}*${a}	
+variable r equal 1.6e-2         #圆柱半径
+#variable r_inner equal 1e-2
+variable c equal 1e-4      #声速
+variable nu equal 1e-6
+variable mu equal ${rho}*${nu}
+variable rc equal 4.5*${dx}
+variable xc equal 0.05
+variable yc equal 0.05
+variable LL equal 0.3
+variable L equal 0.1
+variable y_lo equal -2*${rc}
+variable y_hi equal ${L}+2*${rc}
+variable z_lo equal -0.5*${dx}
+variable z_hi equal  0.5*${dx}
+variable skin equal 0.2*${rc}
+variable dt equal 9*${dx}*${dx}/${nu}/32
+#variable dt equal 3*${dx}/${c}/8
+dimension	2
+boundary	p p p
+units		si 
+
+atom_style	meso
+# create geometry
+region region_box block 0 ${LL} ${y_lo} ${y_hi} ${z_lo} ${z_hi} units box
+create_box 4 region_box
+lattice sq ${dx} origin 0.5 0.5 0
+create_atoms    1 box
+
+region	     region_cylinder cylinder z ${xc} ${yc} ${r} EDGE EDGE side in units box 
+set          region region_cylinder type 2
+
+region       region_wall_top block 0 ${LL} ${L} ${y_hi} ${z_lo} ${z_hi} units box
+set          region region_wall_top type 3
+region       region_wall_bottom block 0 ${LL} ${y_lo} 0 ${z_lo} ${z_hi} units box
+set          region region_wall_bottom type 4
+
+group           flow type 1
+group           cylinder type 2
+group           upper_wall type 3
+group           lower_wall type 4
+
+mass		* ${m}
+
+
+# potentials
+
+pair_style	hybrid/overlay sph/rhosum 1 sph/morris1997 sph/morris1997/noslip/flat sph/morris1997/noslip/sphere
+#                             |  rc  |  kernel的类型编号 |  
+pair_coeff      * * sph/rhosum  ${rc}  5
+pair_coeff		1 1 sph/morris1997 ${c} ${mu} ${rc} 5
+pair_coeff      1 2 sph/morris1997/noslip/sphere ${c} ${mu} ${rc} 5 cylinder ${r} 0.5
+pair_coeff      1 3 sph/morris1997/noslip/flat 0 ${c} ${mu} ${rc} 5 upper_wall ${L} 100
+pair_coeff      1 4 sph/morris1997/noslip/flat 0 ${c} ${mu} ${rc} 5 lower_wall 0 100
+
+
+
+# define groups density
+#set		group all meso/rho 1000.0
+
+compute            rho_peratom all meso/rho/atom
+compute            e_peratom all meso/e/atom
+compute            ke_peratom all ke/atom
+compute            esph all reduce sum c_e_peratom
+compute            ke all ke
+variable           etot equal c_ke+c_esph
+
+fix			force flow addforce ${f} 0.0 0.0
+fix			force_2 cylinder addforce ${f} 0.0 0.0
+
+
+#vle profile
+#compute		1 flow chunk/atom bin/2d x 0 0.001 y 0 0.001 units box
+#fix			1 flow ave/chunk 1 10000 100000 1 vx vy c_rho_peratom file vel.profile
+
+
+fix			integrate_1 flow meso
+fix			integrate_2 cylinder rigid/meso single 
+fix			integrate_3 upper_wall meso/stationary 
+fix			integrate_4 lower_wall meso/stationary 
+fix	                freeze_z all enforce2d 
+
+
+thermo		100
+thermo_style custom step c_esph v_etot
+thermo_modify norm no
+
+neighbor	${skin} bin
+timestep	${dt}
+
+#thermo_modify	temp mobile
+
+dump		1 all custom 100 dump.lammpstrj id type x y vx vy c_rho_peratom
+dump_modify	1 first yes
+
+run		200000
