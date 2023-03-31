@@ -1,0 +1,63 @@
+# 2022-01-07
+# Re = 0.01
+
+# parameters
+
+#fluid
+variable nu equal 1
+variable rho equal 1
+variable mu equal ${nu}*${rho}
+
+variable v0 equal 2.5
+variable c equal 20*${v0}
+variable dp equal 1.0*$c*$c*${rho}
+
+variable dx equal 0.1
+
+variable rc equal 3*${dx}
+#variable dt equal ${dx}*${dx}/${nu}/4
+variable dt equal ${dx}/(${c}+${v0})/8
+
+
+variable skin equal 0.1*${rc}
+variable timesteps equal 2000000
+variable ndump equal 100
+
+
+variable vfile string dump_ellipsoid.txt
+
+atom_style meso
+dimension	2
+boundary p p p
+read_data disk.data
+
+group           disk type 1
+group           fluid type 2
+group		    low type 3
+group            upper type 4
+group           boundary union disk low upper
+group           wall union low upper
+
+
+set		group all meso/rho 1
+
+pair_style hybrid/overlay sph/adami/boundary/rigid boundary 0 0 0 0 ${rho} ${c} 1 wall disk sph/adami2013 boundary ${dp}
+pair_coeff * * sph/adami/boundary/rigid ${rc} 5
+pair_coeff * * sph/adami2013 ${rho} ${c} ${mu} ${rc} 5
+
+fix             1 fluid mesoadami2013
+fix             2 disk rigid/meso single
+fix             3 upper meso/move linear ${v0} 0 0 units box
+fix             4 low meso/move linear -${v0} 0 0 units box
+compute rho_peratom all meso/rho/atom
+
+fix 			8 disk ave/time 1 1 100 f_2[1] f_2[2] f_2[3] f_2[4] f_2[5] f_2[6] f_2[7] f_2[8] f_2[9] f_2[10] f_2[11] f_2[12] f_2[13] f_2[14] f_2[15] f_2[16] mode vector ave one file dump_disk.txt
+
+fix 9 all enforce2d
+
+timestep ${dt}
+neighbor ${skin} bin
+neigh_modify	delay 0 every 1 check yes
+thermo		${ndump}
+dump		1 all custom 1000 dump.lammpstrj id type x y z vx vy vz c_rho_peratom 
+run ${timesteps}
